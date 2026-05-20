@@ -1,6 +1,6 @@
 # Telnyx TTS Latency Test
 
-Benchmark multiple Telnyx TTS WebSocket voices and generate a shareable PDF report.
+Benchmark multiple Telnyx TTS voices and generate a shareable PDF report.
 
 This repo follows the same basic shape as the STT latency harness, but it uses TTS-specific metrics:
 
@@ -31,6 +31,8 @@ Default voices:
 - `azure.en-US-AvaMultilingualNeural`
 
 The default output format is `mp3` because it works across the default multi-provider voice set. Use `--audio-format linear16` when benchmarking voices that support raw PCM and when you want `audio_duration_ms` and `rtf`.
+
+Ultra voices are REST-only, so the runner automatically benchmarks `Telnyx.Ultra.*` voices through the REST endpoint while keeping WebSocket for the other providers.
 
 Run a custom set of voices:
 

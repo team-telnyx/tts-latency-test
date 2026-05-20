@@ -8,6 +8,8 @@ import json
 import os
 import statistics
 import time
+import urllib.error
+import urllib.request
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +20,7 @@ import websockets
 
 
 DEFAULT_ENDPOINT = "wss://api.telnyx.com/v2/text-to-speech/speech"
+DEFAULT_REST_ENDPOINT = "https://api.telnyx.com/v2/text-to-speech/speech"
 DEFAULT_VOICES = [
     "Telnyx.NaturalHD.astra",
     "aws.Polly.Generative.Lucia",
@@ -33,6 +36,7 @@ class RunResult:
     prompt_index: int
     text: str
     run_index: int
+    interface: str
     audio_format: str
     sample_rate: int
     success: bool
@@ -92,7 +96,13 @@ def compute_audio_duration_ms(audio_bytes: int, audio_format: str, sample_rate: 
     return (audio_bytes / 2) / sample_rate * 1000
 
 
-async def run_once(
+def interface_for_voice(voice: str) -> str:
+    if voice.startswith("Telnyx.Ultra."):
+        return "rest"
+    return "websocket"
+
+
+def run_once_rest(
     args: argparse.Namespace,
     api_key: str,
     voice: str,
@@ -105,6 +115,74 @@ async def run_once(
         prompt_index=prompt_index,
         text=text,
         run_index=run_index,
+        interface="rest",
+        audio_format=args.audio_format,
+        sample_rate=args.sample_rate,
+        success=False,
+    )
+    payload = {
+        "text": text,
+        "voice": voice,
+        "output_type": "binary_output",
+    }
+    if args.sample_rate:
+        payload["sampling_rate"] = args.sample_rate
+
+    request = urllib.request.Request(
+        args.rest_endpoint,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        start = time.perf_counter()
+        with urllib.request.urlopen(request, timeout=args.timeout) as response:
+            while True:
+                chunk = response.read(8192)
+                if not chunk:
+                    break
+                elapsed_ms = (time.perf_counter() - start) * 1000
+                if result.first_audio_ms is None:
+                    result.first_audio_ms = elapsed_ms
+                result.final_audio_ms = elapsed_ms
+                result.audio_chunks += 1
+                result.audio_bytes += len(chunk)
+        result.audio_duration_ms = compute_audio_duration_ms(
+            result.audio_bytes,
+            args.audio_format,
+            args.sample_rate,
+        )
+        if result.final_audio_ms is not None and result.audio_duration_ms:
+            result.rtf = result.final_audio_ms / result.audio_duration_ms
+        result.final_seen = True
+        result.success = result.first_audio_ms is not None
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        result.error = f"HTTPError {exc.code}: {body}"
+    except Exception as exc:
+        result.error = f"{type(exc).__name__}: {exc}"
+
+    return result
+
+
+async def run_once_websocket(
+    args: argparse.Namespace,
+    api_key: str,
+    voice: str,
+    text: str,
+    prompt_index: int,
+    run_index: int,
+) -> RunResult:
+    result = RunResult(
+        voice=voice,
+        prompt_index=prompt_index,
+        text=text,
+        run_index=run_index,
+        interface="websocket",
         audio_format=args.audio_format,
         sample_rate=args.sample_rate,
         success=False,
@@ -179,6 +257,19 @@ async def run_once(
     return result
 
 
+async def run_once(
+    args: argparse.Namespace,
+    api_key: str,
+    voice: str,
+    text: str,
+    prompt_index: int,
+    run_index: int,
+) -> RunResult:
+    if interface_for_voice(voice) == "rest":
+        return await asyncio.to_thread(run_once_rest, args, api_key, voice, text, prompt_index, run_index)
+    return await run_once_websocket(args, api_key, voice, text, prompt_index, run_index)
+
+
 async def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     api_key = args.api_key or os.getenv("TELNYX_API_KEY")
     if not api_key:
@@ -201,6 +292,7 @@ async def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         final_audio = [item.final_audio_ms for item in ok if item.final_audio_ms is not None]
         rtf_values = [item.rtf for item in ok if item.rtf is not None]
         summary[voice] = {
+            "interface": interface_for_voice(voice),
             "runs": len(voice_results),
             "successes": len(ok),
             "errors": len(voice_results) - len(ok),
@@ -216,6 +308,7 @@ async def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         "metadata": {
             "created_at": datetime.now(timezone.utc).isoformat(),
             "endpoint": args.endpoint,
+            "rest_endpoint": args.rest_endpoint,
             "audio_format": args.audio_format,
             "sample_rate": args.sample_rate,
             "runs_per_prompt": args.runs,
@@ -223,7 +316,7 @@ async def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             "voices": args.voice,
             "metric_definitions": {
                 "first_audio_ms": "Time from sending the benchmark text frame to receiving the first audio bytes.",
-                "final_audio_ms": "Time from sending the benchmark text frame to the last observed audio chunk before final close.",
+                "final_audio_ms": "Time from sending the benchmark text frame or REST request to the last observed audio bytes.",
                 "audio_duration_ms": "Estimated generated audio duration for linear16 output.",
                 "rtf": "Final audio latency divided by generated audio duration. Lower is better.",
             },
@@ -234,8 +327,9 @@ async def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Benchmark Telnyx TTS WebSocket latency.")
+    parser = argparse.ArgumentParser(description="Benchmark Telnyx TTS latency.")
     parser.add_argument("--endpoint", default=DEFAULT_ENDPOINT)
+    parser.add_argument("--rest-endpoint", default=DEFAULT_REST_ENDPOINT)
     parser.add_argument("--api-key", default=None)
     parser.add_argument("--voice", action="append", default=[])
     parser.add_argument("--runs", type=int, default=3)
