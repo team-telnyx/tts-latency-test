@@ -97,7 +97,12 @@ def compute_audio_duration_ms(audio_bytes: int, audio_format: str, sample_rate: 
 
 
 def interface_for_voice(voice: str) -> str:
-    if voice.startswith("Telnyx.Ultra."):
+    rest_prefixes = (
+        "Telnyx.Ultra.",
+        "Telnyx.Natural.",
+        "Resemble.",
+    )
+    if voice.startswith(rest_prefixes):
         return "rest"
     return "websocket"
 
