@@ -37,10 +37,12 @@ def logo_svg() -> str:
 def metric_rows(summary: dict) -> str:
     rows = []
     for voice, item in sorted(summary.items(), key=lambda row: row[1].get("first_audio_p50_ms") or 999999):
+        label = item.get("label", voice)
         rows.append(
             f"""
             <tr>
-              <td><span class="voice-dot"></span>{voice}</td>
+              <td><span class="voice-dot"></span>{label}</td>
+              <td>{item.get("interface", "websocket")}</td>
               <td>{fmt_ms(item.get("first_audio_p50_ms"))}</td>
               <td>{fmt_ms(item.get("first_audio_p95_ms"))}</td>
               <td>{fmt_ms(item.get("final_audio_p50_ms"))}</td>
@@ -59,11 +61,12 @@ def bar_chart(summary: dict, key: str, label: str) -> str:
     max_value = max(value for _, value in rows) or 1
     html_rows = []
     for voice, value in sorted(rows, key=lambda row: row[1]):
+        voice_label = summary[voice].get("label", voice)
         width = max(4, value / max_value * 100)
         html_rows.append(
             f"""
             <div class="bar-row">
-              <div class="bar-label">{voice}</div>
+              <div class="bar-label">{voice_label}</div>
               <div class="bar-track"><div class="bar-fill" style="width:{width:.2f}%"></div></div>
               <div class="bar-value">{fmt_ms(value)}</div>
             </div>
@@ -84,11 +87,11 @@ def insight_cards(summary: dict) -> str:
         default=None,
     )
     cards = [
-        ("First audio", fastest_first[0], fmt_ms(fastest_first[1].get("first_audio_p50_ms"))),
-        ("Final audio", fastest_final[0], fmt_ms(fastest_final[1].get("final_audio_p50_ms"))),
+        ("First audio", fastest_first[1].get("label", fastest_first[0]), fmt_ms(fastest_first[1].get("first_audio_p50_ms"))),
+        ("Final audio", fastest_final[1].get("label", fastest_final[0]), fmt_ms(fastest_final[1].get("final_audio_p50_ms"))),
     ]
     if best_rtf:
-        cards.append(("Real-time factor", best_rtf[0], fmt_num(best_rtf[1].get("rtf_p50"))))
+        cards.append(("Real-time factor", best_rtf[1].get("label", best_rtf[0]), fmt_num(best_rtf[1].get("rtf_p50"))))
     return "\n".join(
         f"""
         <div class="insight">
@@ -255,11 +258,11 @@ def render_html(data: dict) -> str:
     text-align: left;
     color: {MUTED};
     font-weight: 700;
-    padding: 0.12in 0.08in;
+    padding: 0.08in 0.06in;
     border-bottom: 1px solid rgba(247,243,232,0.16);
   }}
   td {{
-    padding: 0.13in 0.08in;
+    padding: 0.085in 0.06in;
     border-bottom: 1px solid rgba(247,243,232,0.08);
     color: rgba(247,243,232,0.9);
   }}
@@ -274,8 +277,8 @@ def render_html(data: dict) -> str:
   .insights {{
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    gap: 0.16in;
-    margin: 0.18in 0 0.24in;
+    gap: 0.12in;
+    margin: 0.14in 0 0.18in;
   }}
   .insight-value {{
     font-size: 28px;
@@ -340,6 +343,7 @@ def render_html(data: dict) -> str:
         <thead>
           <tr>
             <th>Voice</th>
+            <th>Interface</th>
             <th>First audio p50</th>
             <th>First audio p95</th>
             <th>Final audio p50</th>
