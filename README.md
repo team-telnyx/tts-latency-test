@@ -24,6 +24,14 @@ export TELNYX_API_KEY="YOUR_API_KEY"
 python3 run.py --runs 3 --json-out reports/tts-benchmark-results.json
 ```
 
+Sample size is calculated as:
+
+```text
+voices × prompts × runs
+```
+
+The JSON output records `voice_count`, `prompt_count`, `runs_per_prompt`, `sample_size`, `concurrency`, and `region`.
+
 Default voices:
 
 - `Telnyx.NaturalHD.astra`
@@ -42,6 +50,8 @@ python3 run.py \
   --voice aws.Polly.Generative.Lucia \
   --voice azure.en-US-AvaMultilingualNeural \
   --runs 5 \
+  --concurrency 1 \
+  --region "us-east client" \
   --audio-format mp3 \
   --json-out reports/custom-results.json
 ```
@@ -82,7 +92,7 @@ For each voice, prompt, and run:
 5. Measure time to first audio bytes and final audio bytes.
 6. Estimate generated audio duration when output is `linear16`.
 
-Keep prompt text, output format, sample rate, voice settings, region, and credentials fixed when comparing runs.
+Keep prompt text, output format, sample rate, voice settings, client region, concurrency, endpoint, and credentials fixed when comparing runs.
 
 ## Useful flags
 

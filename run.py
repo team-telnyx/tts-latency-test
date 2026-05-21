@@ -282,12 +282,27 @@ async def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
 
     prompts = load_prompts(args)
     results: list[RunResult] = []
+    jobs = [
+        (voice, text, prompt_index, run_index)
+        for voice in args.voice
+        for prompt_index, text in enumerate(prompts, start=1)
+        for run_index in range(1, args.runs + 1)
+    ]
 
-    for voice in args.voice:
-        for prompt_index, text in enumerate(prompts, start=1):
-            for run_index in range(1, args.runs + 1):
+    if args.concurrency == 1:
+        for voice, text, prompt_index, run_index in jobs:
+            print(f"Running {voice} prompt={prompt_index} run={run_index}")
+            results.append(await run_once(args, api_key, voice, text, prompt_index, run_index))
+    else:
+        semaphore = asyncio.Semaphore(args.concurrency)
+
+        async def run_job(job: tuple[str, str, int, int]) -> RunResult:
+            voice, text, prompt_index, run_index = job
+            async with semaphore:
                 print(f"Running {voice} prompt={prompt_index} run={run_index}")
-                results.append(await run_once(args, api_key, voice, text, prompt_index, run_index))
+                return await run_once(args, api_key, voice, text, prompt_index, run_index)
+
+        results = list(await asyncio.gather(*(run_job(job) for job in jobs)))
 
     summary: dict[str, Any] = {}
     for voice in args.voice:
@@ -316,7 +331,12 @@ async def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             "rest_endpoint": args.rest_endpoint,
             "audio_format": args.audio_format,
             "sample_rate": args.sample_rate,
+            "region": args.region,
+            "concurrency": args.concurrency,
             "runs_per_prompt": args.runs,
+            "prompt_count": len(prompts),
+            "voice_count": len(args.voice),
+            "sample_size": len(jobs),
             "prompts": prompts,
             "voices": args.voice,
             "metric_definitions": {
@@ -338,6 +358,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--api-key", default=None)
     parser.add_argument("--voice", action="append", default=[])
     parser.add_argument("--runs", type=int, default=3)
+    parser.add_argument("--concurrency", type=int, default=1)
+    parser.add_argument("--region", default="local-client", help="Label for the client region or environment running the test.")
     parser.add_argument("--text", action="append")
     parser.add_argument("--prompt-file", default=None)
     parser.add_argument("--audio-format", default=DEFAULT_AUDIO_FORMAT)
@@ -348,6 +370,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--json", action="store_true", help="Print full JSON results to stdout.")
     parser.add_argument("--show-stream", action="store_true", help="Print raw server JSON messages.")
     args = parser.parse_args()
+    if args.runs < 1:
+        raise ValueError("--runs must be at least 1.")
+    if args.concurrency < 1:
+        raise ValueError("--concurrency must be at least 1.")
     if not args.voice:
         args.voice = DEFAULT_VOICES
     return args
