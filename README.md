@@ -6,7 +6,7 @@ This repo follows the same basic shape as the STT latency harness, but it uses T
 
 - `first_audio_ms`: time from sending text to receiving the first audio bytes
 - `final_audio_ms`: time from sending text to the final observed audio chunk
-- `audio_duration_ms`: estimated generated audio duration for `linear16`
+- `audio_duration_ms`: generated audio duration from `linear16` byte count, MP3 metadata, or WAV headers when available
 - `rtf`: final audio latency divided by generated audio duration
 
 ## Setup
@@ -38,7 +38,7 @@ Default voices:
 - `aws.Polly.Generative.Lucia`
 - `azure.en-US-AvaMultilingualNeural`
 
-The default output format is `mp3` because it works across the default multi-provider voice set. Use `--audio-format linear16` when benchmarking voices that support raw PCM and when you want `audio_duration_ms` and `rtf`.
+The default output format is `mp3` because it works across the default multi-provider voice set. The runner calculates `audio_duration_ms` and `rtf` for MP3 responses when duration metadata can be parsed. Use `--audio-format linear16` when benchmarking voices that support raw PCM and you want duration from byte count.
 
 Ultra voices are REST-only, so the runner automatically benchmarks `Telnyx.Ultra.*` voices through the REST endpoint while keeping WebSocket for the other providers.
 
@@ -68,6 +68,12 @@ Use a prompt file:
 python3 run.py --prompt-file samples/prompts.json --runs 5
 ```
 
+Run the longer-text dimension used in the model coverage report:
+
+```bash
+python3 run.py --prompt-file samples/long-prompt.json --runs 2 --timeout 60
+```
+
 ## Generate the report
 
 ```bash
@@ -90,7 +96,7 @@ For each voice, prompt, and run:
 3. Start the timer immediately before sending the prompt frame with `flush: true`.
 4. Send `{"text":""}` to flush and close the sequence.
 5. Measure time to first audio bytes and final audio bytes.
-6. Estimate generated audio duration when output is `linear16`.
+6. Calculate generated audio duration from raw PCM byte count, MP3 metadata, or WAV headers when available.
 
 Keep prompt text, output format, sample rate, voice settings, client region, concurrency, endpoint, and credentials fixed when comparing runs.
 

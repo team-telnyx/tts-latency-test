@@ -6,10 +6,15 @@ import asyncio
 import base64
 import json
 import os
+import shutil
 import statistics
+import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.request
+import wave
+from io import BytesIO
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,6 +22,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 import websockets
+from mutagen.mp3 import MP3
 
 
 DEFAULT_ENDPOINT = "wss://api.telnyx.com/v2/text-to-speech/speech"
@@ -44,6 +50,7 @@ class RunResult:
     final_audio_ms: float | None = None
     audio_duration_ms: float | None = None
     rtf: float | None = None
+    duration_source: str | None = None
     audio_chunks: int = 0
     audio_bytes: int = 0
     final_seen: bool = False
@@ -90,10 +97,64 @@ def make_url(args: argparse.Namespace, voice: str) -> str:
     return f"{args.endpoint}?{urlencode(params)}"
 
 
-def compute_audio_duration_ms(audio_bytes: int, audio_format: str, sample_rate: int) -> float | None:
-    if audio_format != "linear16" or audio_bytes <= 0:
+def ffprobe_duration_ms(audio: bytes, suffix: str) -> float | None:
+    if not shutil.which("ffprobe"):
         return None
-    return (audio_bytes / 2) / sample_rate * 1000
+    with tempfile.NamedTemporaryFile(suffix=suffix) as tmp:
+        tmp.write(audio)
+        tmp.flush()
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                tmp.name,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    try:
+        duration = float(result.stdout.strip())
+    except ValueError:
+        return None
+    return duration * 1000 if duration > 0 else None
+
+
+def compute_audio_duration_ms(
+    audio: bytes,
+    audio_format: str,
+    sample_rate: int,
+    voice: str,
+) -> tuple[float | None, str | None]:
+    if not audio:
+        return None, None
+    if voice.startswith("Telnyx.Qwen3TTS."):
+        return (len(audio) / 2) / 24000 * 1000, "qwen3tts_pcm_bytes"
+    if audio_format == "linear16":
+        return (len(audio) / 2) / sample_rate * 1000, "linear16_bytes"
+    if audio_format == "mp3" or audio.startswith(b"ID3") or audio[:2] in (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"):
+        try:
+            duration = MP3(BytesIO(audio)).info.length * 1000
+            if duration > 0:
+                return duration, "mp3_metadata"
+        except Exception:
+            pass
+        duration = ffprobe_duration_ms(audio, ".mp3")
+        if duration:
+            return duration, "ffprobe_mp3"
+        return None, None
+    if audio.startswith(b"RIFF") and audio[8:12] == b"WAVE":
+        try:
+            with wave.open(BytesIO(audio)) as wav:
+                return wav.getnframes() / wav.getframerate() * 1000, "wav_header"
+        except Exception:
+            return None, None
+    return None, None
 
 
 def interface_for_voice(voice: str) -> str:
@@ -144,6 +205,7 @@ def run_once_rest(
     )
 
     try:
+        audio_parts: list[bytes] = []
         start = time.perf_counter()
         with urllib.request.urlopen(request, timeout=args.timeout) as response:
             while True:
@@ -156,10 +218,12 @@ def run_once_rest(
                 result.final_audio_ms = elapsed_ms
                 result.audio_chunks += 1
                 result.audio_bytes += len(chunk)
-        result.audio_duration_ms = compute_audio_duration_ms(
-            result.audio_bytes,
+                audio_parts.append(chunk)
+        result.audio_duration_ms, result.duration_source = compute_audio_duration_ms(
+            b"".join(audio_parts),
             args.audio_format,
             args.sample_rate,
+            voice,
         )
         if result.final_audio_ms is not None and result.audio_duration_ms:
             result.rtf = result.final_audio_ms / result.audio_duration_ms
@@ -211,6 +275,7 @@ async def run_once_websocket(
             start = time.perf_counter()
             await websocket.send(json.dumps({"text": text, "flush": True}))
             await websocket.send(json.dumps({"text": ""}))
+            audio_parts: list[bytes] = []
 
             while True:
                 try:
@@ -243,15 +308,17 @@ async def run_once_websocket(
                     result.final_audio_ms = elapsed_ms
                     result.audio_chunks += 1
                     result.audio_bytes += len(audio)
+                    audio_parts.append(audio)
 
                 if message.get("isFinal") is True:
                     result.final_seen = True
                     break
 
-            result.audio_duration_ms = compute_audio_duration_ms(
-                result.audio_bytes,
+            result.audio_duration_ms, result.duration_source = compute_audio_duration_ms(
+                b"".join(audio_parts),
                 args.audio_format,
                 args.sample_rate,
+                voice,
             )
             if result.final_audio_ms is not None and result.audio_duration_ms:
                 result.rtf = result.final_audio_ms / result.audio_duration_ms
@@ -321,6 +388,7 @@ async def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             "final_audio_p50_ms": rounded(percentile(final_audio, 50)),
             "final_audio_p95_ms": rounded(percentile(final_audio, 95)),
             "rtf_p50": rounded(percentile(rtf_values, 50)),
+            "rtf_p95": rounded(percentile(rtf_values, 95)),
             "audio_chunks_median": rounded(statistics.median([item.audio_chunks for item in ok])) if ok else None,
         }
 
@@ -342,7 +410,7 @@ async def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             "metric_definitions": {
                 "first_audio_ms": "Time from sending the benchmark text frame to receiving the first audio bytes.",
                 "final_audio_ms": "Time from sending the benchmark text frame or REST request to the last observed audio bytes.",
-                "audio_duration_ms": "Estimated generated audio duration for linear16 output.",
+                "audio_duration_ms": "Generated audio duration from linear16 byte count, MP3 metadata, or WAV headers when available.",
                 "rtf": "Final audio latency divided by generated audio duration. Lower is better.",
             },
         },
