@@ -1,0 +1,3 @@
+[
+  "Thanks for calling Telnyx. I pulled up your account and I can see the last invoice, the active numbers, and the call logs from this morning. The main thing I am checking now is whether the call was routed through the expected voice profile, whether the media stream stayed connected for the full session, and whether the assistant received the final user turn before it started speaking. If everything lines up, the next step is simple: I will send a short summary to your team, include the call identifier, and note that no customer action is required. If I find a mismatch, I will flag the exact timestamp and route it to the support team so they can investigate without asking you to repeat the same details."
+]

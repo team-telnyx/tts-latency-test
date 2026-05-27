@@ -68,6 +68,12 @@ Use a prompt file:
 python3 run.py --prompt-file samples/prompts.json --runs 5
 ```
 
+Run the longer-text dimension used in the model coverage report:
+
+```bash
+python3 run.py --prompt-file samples/long-prompt.json --runs 2 --timeout 60
+```
+
 ## Generate the report
 
 ```bash
